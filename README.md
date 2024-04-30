@@ -1,5 +1,5 @@
 ---
-title: Vocal-Instrumental Audio Separator
+title: Audio🔹Separator
 emoji: 🏃
 colorFrom: purple
 colorTo: pink
