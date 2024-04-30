@@ -1,13 +1,14 @@
 ---
-title: Audio Separator
-emoji: 🌍
+title: Vocal-Instrumental Audio Separator
+emoji: 🏃
 colorFrom: purple
-colorTo: red
+colorTo: pink
 sdk: gradio
 sdk_version: 4.28.3
 app_file: app.py
-pinned: false
+pinned: true
 license: mit
+short_description: Vocal and background audio separator
 ---
 
 Check out the configuration reference at https://huggingface.co/docs/hub/spaces-config-reference

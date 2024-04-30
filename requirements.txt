@@ -1,0 +1,3 @@
+soundfile
+librosa
+torch==2.2.0
