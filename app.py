@@ -28,6 +28,10 @@ import spaces
 import gradio as gr
 import logging
 import time
+import traceback
+from pedalboard import Pedalboard, Reverb, Delay, Chorus, Compressor, Gain, HighpassFilter, LowpassFilter
+from pedalboard.io import AudioFile
+import numpy as np
 
 warnings.filterwarnings("ignore")
 
@@ -360,6 +364,7 @@ def run_mdx(
     m_threads=2,
     device_base="cuda",
 ):
+
     if device_base == "cuda":
         device = torch.device("cuda:0")
         processor_num = 0
@@ -373,6 +378,96 @@ def run_mdx(
         m_threads = 1
 
     model_hash = MDX.get_hash(model_path)
+    mp = model_params.get(model_hash)
+    model = MDXModel(
+        device,
+        dim_f=mp["mdx_dim_f_set"],
+        dim_t=2 ** mp["mdx_dim_t_set"],
+        n_fft=mp["mdx_n_fft_scale_set"],
+        stem_name=mp["primary_stem"],
+        compensation=mp["compensate"],
+    )
+
+    mdx_sess = MDX(model_path, model, processor=processor_num)
+    wave, sr = librosa.load(filename, mono=False, sr=44100)
+    # normalizing input wave gives better output
+    peak = max(np.max(wave), abs(np.min(wave)))
+    wave /= peak
+    if denoise:
+        wave_processed = -(mdx_sess.process_wave(-wave, m_threads)) + (
+            mdx_sess.process_wave(wave, m_threads)
+        )
+        wave_processed *= 0.5
+    else:
+        wave_processed = mdx_sess.process_wave(wave, m_threads)
+    # return to previous peak
+    wave_processed *= peak
+    stem_name = model.stem_name if suffix is None else suffix
+
+    main_filepath = None
+    if not exclude_main:
+        main_filepath = os.path.join(
+            output_dir,
+            f"{os.path.basename(os.path.splitext(filename)[0])}_{stem_name}.wav",
+        )
+        sf.write(main_filepath, wave_processed.T, sr)
+
+    invert_filepath = None
+    if not exclude_inversion:
+        diff_stem_name = (
+            stem_naming.get(stem_name)
+            if invert_suffix is None
+            else invert_suffix
+        )
+        stem_name = (
+            f"{stem_name}_diff" if diff_stem_name is None else diff_stem_name
+        )
+        invert_filepath = os.path.join(
+            output_dir,
+            f"{os.path.basename(os.path.splitext(filename)[0])}_{stem_name}.wav",
+        )
+        sf.write(
+            invert_filepath,
+            (-wave_processed.T * model.compensation) + wave.T,
+            sr,
+        )
+
+    if not keep_orig:
+        os.remove(filename)
+
+    del mdx_sess, wave_processed, wave
+    gc.collect()
+    torch.cuda.empty_cache()
+    return main_filepath, invert_filepath
+
+
+def run_mdx_beta(
+    model_params,
+    output_dir,
+    model_path,
+    filename,
+    exclude_main=False,
+    exclude_inversion=False,
+    suffix=None,
+    invert_suffix=None,
+    denoise=False,
+    keep_orig=True,
+    m_threads=2,
+    device_base="",
+):
+
+    m_threads = 1
+    duration = librosa.get_duration(filename=filename)
+    if duration >= 60 and duration <= 120:
+        m_threads = 8
+    elif duration > 120:
+        m_threads = 16
+
+    logger.info(f"threads: {m_threads}")
+
+    model_hash = MDX.get_hash(model_path)
+    device = torch.device("cpu")
+    processor_num = -1
     mp = model_params.get(model_hash)
     model = MDXModel(
         device,
@@ -514,7 +609,8 @@ def process_uvr_task(
 
     if only_voiceless:
         logger.info("Voiceless Track Separation...")
-        return run_mdx(
+
+        process = run_mdx(
             mdx_model_params,
             song_output_dir,
             os.path.join(mdxnet_models_dir, "UVR-MDX-NET-Inst_HQ_4.onnx"),
@@ -525,6 +621,8 @@ def process_uvr_task(
             exclude_inversion=True,
             device_base=device_base,
         )
+
+        return process
 
     logger.info("Vocal Track Isolation...")
     vocals_path, instrumentals_path = run_mdx(
@@ -554,11 +652,7 @@ def process_uvr_task(
                 device_base=device_base,
             )
         except Exception as e:
-            if "0:00:" in str(e):
-                gr.Info("Waiting 60 seconds for GPU quota")
-                time.sleep(56)
-                random_sleep()
-                backup_vocals_path, main_vocals_path = run_mdx(
+                backup_vocals_path, main_vocals_path = run_mdx_beta(
                     mdx_model_params,
                     song_output_dir,
                     os.path.join(mdxnet_models_dir, "UVR_MDXNET_KARA_2.onnx"),
@@ -568,8 +662,6 @@ def process_uvr_task(
                     denoise=True,
                     device_base=device_base,
                 )
-            else:
-                raise e
     else:
         backup_vocals_path, main_vocals_path = None, vocals_path
 
@@ -590,11 +682,7 @@ def process_uvr_task(
                 device_base=device_base,
             )
         except Exception as e:
-            if "0:00:" in str(e):
-                gr.Info("Waiting 60 seconds for GPU quota")
-                time.sleep(56)
-                random_sleep()
-                _, vocals_dereverb_path = run_mdx(
+                _, vocals_dereverb_path = run_mdx_beta(
                     mdx_model_params,
                     song_output_dir,
                     os.path.join(mdxnet_models_dir, "Reverb_HQ_By_FoxJoy.onnx"),
@@ -604,8 +692,6 @@ def process_uvr_task(
                     denoise=True,
                     device_base=device_base,
                 )
-            else:
-                raise e
     else:
         vocals_dereverb_path = main_vocals_path
 
@@ -618,51 +704,229 @@ def process_uvr_task(
     )
 
 
-def sound_separate(media_file, stem, main, dereverb):
+def add_vocal_effects(input_file, output_file, reverb_room_size=0.6, vocal_reverb_dryness=0.8, reverb_damping=0.6, reverb_wet_level=0.35,
+                      delay_seconds=0.4, delay_mix=0.25,
+                      compressor_threshold_db=-25, compressor_ratio=3.5, compressor_attack_ms=10, compressor_release_ms=60,
+                      gain_db=3):
 
+    effects = [HighpassFilter()]
+
+    effects.append(Reverb(room_size=reverb_room_size, damping=reverb_damping, wet_level=reverb_wet_level, dry_level=vocal_reverb_dryness))
+
+    effects.append(Compressor(threshold_db=compressor_threshold_db, ratio=compressor_ratio,
+                              attack_ms=compressor_attack_ms, release_ms=compressor_release_ms))
+
+    if delay_seconds > 0 or delay_mix > 0:
+        effects.append(Delay(delay_seconds=delay_seconds, mix=delay_mix))
+        print("delay applied")
+    # effects.append(Chorus())
+
+    if gain_db:
+        effects.append(Gain(gain_db=gain_db))
+        print("added gain db")
+
+    board = Pedalboard(effects)
+
+    with AudioFile(input_file) as f:
+        with AudioFile(output_file, 'w', f.samplerate, f.num_channels) as o:
+            # Read one second of audio at a time, until the file is empty:
+            while f.tell() < f.frames:
+                chunk = f.read(int(f.samplerate))
+                effected = board(chunk, f.samplerate, reset=False)
+                o.write(effected)
+
+
+def add_instrumental_effects(input_file, output_file, highpass_freq=100, lowpass_freq=12000,
+                             reverb_room_size=0.5, reverb_damping=0.5, reverb_wet_level=0.25,
+                             compressor_threshold_db=-20, compressor_ratio=2.5, compressor_attack_ms=15, compressor_release_ms=80,
+                             gain_db=2):
+
+    effects = [
+        HighpassFilter(cutoff_frequency_hz=highpass_freq),
+        LowpassFilter(cutoff_frequency_hz=lowpass_freq),
+    ]
+    if reverb_room_size > 0 or reverb_damping > 0 or reverb_wet_level > 0:
+        effects.append(Reverb(room_size=reverb_room_size, damping=reverb_damping, wet_level=reverb_wet_level))
+
+    effects.append(Compressor(threshold_db=compressor_threshold_db, ratio=compressor_ratio,
+                              attack_ms=compressor_attack_ms, release_ms=compressor_release_ms))
+
+    if gain_db:
+        effects.append(Gain(gain_db=gain_db))
+
+    board = Pedalboard(effects)
+
+    with AudioFile(input_file) as f:
+        with AudioFile(output_file, 'w', f.samplerate, f.num_channels) as o:
+            # Read one second of audio at a time, until the file is empty:
+            while f.tell() < f.frames:
+                chunk = f.read(int(f.samplerate))
+                effected = board(chunk, f.samplerate, reset=False)
+                o.write(effected)
+
+    
+def sound_separate(media_file, stem, main, dereverb, vocal_effects=True, background_effects=True,
+                   vocal_reverb_room_size=0.6, vocal_reverb_damping=0.6, vocal_reverb_wet_level=0.35,
+                   vocal_delay_seconds=0.4, vocal_delay_mix=0.25,
+                   vocal_compressor_threshold_db=-25, vocal_compressor_ratio=3.5, vocal_compressor_attack_ms=10, vocal_compressor_release_ms=60,
+                   vocal_gain_db=4,
+                   background_highpass_freq=120, background_lowpass_freq=11000,
+                   background_reverb_room_size=0.5, background_reverb_damping=0.5, background_reverb_wet_level=0.25,
+                   background_compressor_threshold_db=-20, background_compressor_ratio=2.5, background_compressor_attack_ms=15, background_compressor_release_ms=80,
+                   background_gain_db=3):
     if not media_file:
-        raise ValueError("The audio pls")
+        raise ValueError("The audio path is missing.")
 
     if not stem:
-        raise ValueError("Select vocal or background...")
+        raise ValueError("Please select 'vocal' or 'background' stem.")
 
     hash_audio = str(get_hash(media_file))
+    media_dir = os.path.dirname(media_file)
 
     outputs = []
 
     start_time = time.time()
-    
+
     if stem == "vocal":
         try:
             _, _, _, _, vocal_audio = process_uvr_task(
                 orig_song_path=media_file,
-                song_id=hash_audio+"mdx",
+                song_id=hash_audio + "mdx",
                 main_vocals=main,
                 dereverb=dereverb,
                 remove_files_output_dir=False,
             )
+
+            if vocal_effects:
+                suffix = '_effects'
+                file_name, file_extension = os.path.splitext(vocal_audio)
+                out_effects = file_name + suffix + file_extension
+                out_effects_path = os.path.join(media_dir, out_effects)
+                add_vocal_effects(vocal_audio, out_effects_path,
+                                  reverb_room_size=vocal_reverb_room_size, reverb_damping=vocal_reverb_damping, reverb_wet_level=vocal_reverb_wet_level,
+                                  delay_seconds=vocal_delay_seconds, delay_mix=vocal_delay_mix,
+                                  compressor_threshold_db=vocal_compressor_threshold_db, compressor_ratio=vocal_compressor_ratio, compressor_attack_ms=vocal_compressor_attack_ms, compressor_release_ms=vocal_compressor_release_ms,
+                                  gain_db=vocal_gain_db
+                                  )
+                vocal_audio = out_effects_path
+
             outputs.append(vocal_audio)
         except Exception as error:
-            gr.Info(str(error))
             logger.error(str(error))
+            traceback.print_exc()
 
     if stem == "background":
-
         background_audio, _ = process_uvr_task(
             orig_song_path=media_file,
-            song_id=hash_audio+"voiceless",
+            song_id=hash_audio + "voiceless",
             only_voiceless=True,
             remove_files_output_dir=False,
         )
-        # copy_files(background_audio, ".")
+
+        if background_effects:
+            suffix = '_effects'
+            file_name, file_extension = os.path.splitext(background_audio)
+            out_effects = file_name + suffix + file_extension
+            out_effects_path = os.path.join(media_dir, out_effects)
+            add_instrumental_effects(background_audio, out_effects_path,
+                                     highpass_freq=background_highpass_freq, lowpass_freq=background_lowpass_freq,
+                                     reverb_room_size=background_reverb_room_size, reverb_damping=background_reverb_damping, reverb_wet_level=background_reverb_wet_level,
+                                     compressor_threshold_db=background_compressor_threshold_db, compressor_ratio=background_compressor_ratio, compressor_attack_ms=background_compressor_attack_ms, compressor_release_ms=background_compressor_release_ms,
+                                     gain_db=background_gain_db
+                                     )
+            background_audio = out_effects_path
+
         outputs.append(background_audio)
 
     end_time = time.time()
     execution_time = end_time - start_time
     logger.info(f"Execution time: {execution_time} seconds")
-    
+
     if not outputs:
-        raise Exception("Error in sound separate")
+        raise Exception("Error in sound separation.")
+
+    return outputs
+
+
+def sound_separate(media_file, stem, main, dereverb, vocal_effects=True, background_effects=True,
+                   vocal_reverb_room_size=0.6, vocal_reverb_damping=0.6, vocal_reverb_dryness=0.8 ,vocal_reverb_wet_level=0.35,
+                   vocal_delay_seconds=0.4, vocal_delay_mix=0.25,
+                   vocal_compressor_threshold_db=-25, vocal_compressor_ratio=3.5, vocal_compressor_attack_ms=10, vocal_compressor_release_ms=60,
+                   vocal_gain_db=4,
+                   background_highpass_freq=120, background_lowpass_freq=11000,
+                   background_reverb_room_size=0.5, background_reverb_damping=0.5, background_reverb_wet_level=0.25,
+                   background_compressor_threshold_db=-20, background_compressor_ratio=2.5, background_compressor_attack_ms=15, background_compressor_release_ms=80,
+                   background_gain_db=3):
+    if not media_file:
+        raise ValueError("The audio path is missing.")
+
+    if not stem:
+        raise ValueError("Please select 'vocal' or 'background' stem.")
+
+    hash_audio = str(get_hash(media_file))
+    media_dir = os.path.dirname(media_file)
+
+    outputs = []
+
+    start_time = time.time()
+
+    if stem == "vocal":
+        try:
+            _, _, _, _, vocal_audio = process_uvr_task(
+                orig_song_path=media_file,
+                song_id=hash_audio + "mdx",
+                main_vocals=main,
+                dereverb=dereverb,
+                remove_files_output_dir=False,
+            )
+
+            if vocal_effects:
+                suffix = '_effects'
+                file_name, file_extension = os.path.splitext(os.path.abspath(vocal_audio))
+                out_effects = file_name + suffix + file_extension
+                out_effects_path = os.path.join(media_dir, out_effects)
+                add_vocal_effects(vocal_audio, out_effects_path,
+                                  reverb_room_size=vocal_reverb_room_size, reverb_damping=vocal_reverb_damping, vocal_reverb_dryness=vocal_reverb_dryness, reverb_wet_level=vocal_reverb_wet_level,
+                                  delay_seconds=vocal_delay_seconds, delay_mix=vocal_delay_mix,
+                                  compressor_threshold_db=vocal_compressor_threshold_db, compressor_ratio=vocal_compressor_ratio, compressor_attack_ms=vocal_compressor_attack_ms, compressor_release_ms=vocal_compressor_release_ms,
+                                  gain_db=vocal_gain_db
+                                  )
+                vocal_audio = out_effects_path
+
+            outputs.append(vocal_audio)
+        except Exception as error:
+            logger.error(str(error))
+
+    if stem == "background":
+        background_audio, _ = process_uvr_task(
+            orig_song_path=media_file,
+            song_id=hash_audio + "voiceless",
+            only_voiceless=True,
+            remove_files_output_dir=False,
+        )
+
+        if background_effects:
+            suffix = '_effects'
+            file_name, file_extension = os.path.splitext(os.path.abspath(background_audio))
+            out_effects = file_name + suffix + file_extension
+            out_effects_path = os.path.join(media_dir, out_effects)
+            print(file_name, file_extension, out_effects, out_effects_path)
+            add_instrumental_effects(background_audio, out_effects_path,
+                                     highpass_freq=background_highpass_freq, lowpass_freq=background_lowpass_freq,
+                                     reverb_room_size=background_reverb_room_size, reverb_damping=background_reverb_damping, reverb_wet_level=background_reverb_wet_level,
+                                     compressor_threshold_db=background_compressor_threshold_db, compressor_ratio=background_compressor_ratio, compressor_attack_ms=background_compressor_attack_ms, compressor_release_ms=background_compressor_release_ms,
+                                     gain_db=background_gain_db
+                                     )
+            background_audio = out_effects_path
+
+        outputs.append(background_audio)
+
+    end_time = time.time()
+    execution_time = end_time - start_time
+    logger.info(f"Execution time: {execution_time} seconds")
+
+    if not outputs:
+        raise Exception("Error in sound separation.")
 
     return outputs
 
@@ -680,7 +944,7 @@ def stem_conf():
     return gr.Radio(
         choices=["vocal", "background"],
         value="vocal",
-        label="Vocal",
+        label="Stem",
         # info="",
     )
 
@@ -702,6 +966,255 @@ def dereverb_conf():
     )
 
 
+def vocal_effects_conf():
+    return gr.Checkbox(
+        False,
+        label="Vocal Effects",
+        # info="",
+        visible=True,
+    )
+
+
+def background_effects_conf():
+    return gr.Checkbox(
+        False,
+        label="Background Effects",
+        # info="",
+        visible=False,
+    )
+
+
+def vocal_reverb_room_size_conf():
+    return gr.Number(
+        0.15,
+        label="Vocal Reverb Room Size",
+        minimum=0.0,
+        maximum=1.0,
+        step=0.05,
+        visible=True,
+    )
+
+
+def vocal_reverb_damping_conf():
+    return gr.Number(
+        0.7,
+        label="Vocal Reverb Damping",
+        minimum=0.0,
+        maximum=1.0,
+        step=0.01,
+        visible=True,
+    )
+
+
+def vocal_reverb_wet_level_conf():
+    return gr.Number(
+        0.2,
+        label="Vocal Reverb Wet Level",
+        minimum=0.0,
+        maximum=1.0,
+        step=0.05,
+        visible=True,
+    )
+
+
+def vocal_reverb_dryness_level_conf():
+    return gr.Number(
+        0.8,
+        label="Vocal Reverb Dryness Level",
+        minimum=0.0,
+        maximum=1.0,
+        step=0.05,
+        visible=True,
+    )
+
+
+def vocal_delay_seconds_conf():
+    return gr.Number(
+        0.,
+        label="Vocal Delay Seconds",
+        minimum=0.0,
+        maximum=1.0,
+        step=0.01,
+        visible=True,
+    )
+
+
+def vocal_delay_mix_conf():
+    return gr.Number(
+        0.,
+        label="Vocal Delay Mix",
+        minimum=0.0,
+        maximum=1.0,
+        step=0.01,
+        visible=True,
+    )
+
+
+def vocal_compressor_threshold_db_conf():
+    return gr.Number(
+        -15,
+        label="Vocal Compressor Threshold (dB)",
+        minimum=-60,
+        maximum=0,
+        step=1,
+        visible=True,
+    )
+
+
+def vocal_compressor_ratio_conf():
+    return gr.Number(
+        4.,
+        label="Vocal Compressor Ratio",
+        minimum=0,
+        maximum=20,
+        step=0.1,
+        visible=True,
+    )
+
+
+def vocal_compressor_attack_ms_conf():
+    return gr.Number(
+        1.0,
+        label="Vocal Compressor Attack (ms)",
+        minimum=0,
+        maximum=1000,
+        step=1,
+        visible=True,
+    )
+
+
+def vocal_compressor_release_ms_conf():
+    return gr.Number(
+        100,
+        label="Vocal Compressor Release (ms)",
+        minimum=0,
+        maximum=3000,
+        step=1,
+        visible=True,
+    )
+
+
+def vocal_gain_db_conf():
+    return gr.Number(
+        0,
+        label="Vocal Gain (dB)",
+        minimum=-40,
+        maximum=40,
+        step=1,
+        visible=True,
+    )
+
+
+def background_highpass_freq_conf():
+    return gr.Number(
+        120,
+        label="Background Highpass Frequency (Hz)",
+        minimum=0,
+        maximum=1000,
+        step=1,
+        visible=True,
+    )
+
+
+def background_lowpass_freq_conf():
+    return gr.Number(
+        11000,
+        label="Background Lowpass Frequency (Hz)",
+        minimum=0,
+        maximum=20000,
+        step=1,
+        visible=True,
+    )
+
+
+def background_reverb_room_size_conf():
+    return gr.Number(
+        0.1,
+        label="Background Reverb Room Size",
+        minimum=0.0,
+        maximum=1.0,
+        step=0.1,
+        visible=True,
+    )
+
+
+def background_reverb_damping_conf():
+    return gr.Number(
+        0.5,
+        label="Background Reverb Damping",
+        minimum=0.0,
+        maximum=1.0,
+        step=0.1,
+        visible=True,
+    )
+
+
+def background_reverb_wet_level_conf():
+    return gr.Number(
+        0.25,
+        label="Background Reverb Wet Level",
+        minimum=0.0,
+        maximum=1.0,
+        step=0.05,
+        visible=True,
+    )
+
+
+def background_compressor_threshold_db_conf():
+    return gr.Number(
+        -15,
+        label="Background Compressor Threshold (dB)",
+        minimum=-60,
+        maximum=0,
+        step=1,
+        visible=True,
+    )
+
+
+def background_compressor_ratio_conf():
+    return gr.Number(
+        4.,
+        label="Background Compressor Ratio",
+        minimum=0,
+        maximum=20,
+        step=0.1,
+        visible=True,
+    )
+
+
+def background_compressor_attack_ms_conf():
+    return gr.Number(
+        15,
+        label="Background Compressor Attack (ms)",
+        minimum=0,
+        maximum=1000,
+        step=1,
+        visible=True,
+    )
+
+
+def background_compressor_release_ms_conf():
+    return gr.Number(
+        60,
+        label="Background Compressor Release (ms)",
+        minimum=0,
+        maximum=3000,
+        step=1,
+        visible=True,
+    )
+
+
+def background_gain_db_conf():
+    return gr.Number(
+        0,
+        label="Background Gain (dB)",
+        minimum=-40,
+        maximum=40,
+        step=1,
+        visible=True,
+    )
+
+
 def button_conf():
     return gr.Button(
         "Inference",
@@ -717,11 +1230,20 @@ def output_conf():
     )
 
 
-def show_vocal_components(input_bool):
-    param = True if input_bool == "vocal" else False
-    return gr.update(visible=param), gr.update(
-        visible=param
-    )
+def show_vocal_components(value_name):
+
+    if value_name == "vocal":
+        return gr.update(visible=True), gr.update(
+            visible=True
+        ), gr.update(visible=True), gr.update(
+            visible=False
+        )
+    else:
+        return gr.update(visible=False), gr.update(
+            visible=False
+        ), gr.update(visible=False), gr.update(
+            visible=True
+        )
 
 
 def get_gui(theme):
@@ -730,23 +1252,54 @@ def get_gui(theme):
         gr.Markdown(description)
 
         aud = audio_conf()
-        
+
         with gr.Column():
             with gr.Row():
                 stem_gui = stem_conf()
-
 
         with gr.Column():
             with gr.Row():
                 main_gui = main_conf()
                 dereverb_gui = dereverb_conf()
+                vocal_effects_gui = vocal_effects_conf()
+                background_effects_gui = background_effects_conf()
 
-                stem_gui.change(
-                    show_vocal_components,
-                    [stem_gui],
-                    [main_gui, dereverb_gui],
-                )
-                
+            # with gr.Column():
+            with gr.Accordion("Vocal Effects Parameters", open=False): # with gr.Row():
+                # gr.Label("Vocal Effects Parameters")
+                with gr.Row():
+                    vocal_reverb_room_size_gui = vocal_reverb_room_size_conf()
+                    vocal_reverb_damping_gui = vocal_reverb_damping_conf()
+                    vocal_reverb_dryness_gui = vocal_reverb_dryness_level_conf()
+                    vocal_reverb_wet_level_gui = vocal_reverb_wet_level_conf()
+                    vocal_delay_seconds_gui = vocal_delay_seconds_conf()
+                    vocal_delay_mix_gui = vocal_delay_mix_conf()
+                    vocal_compressor_threshold_db_gui = vocal_compressor_threshold_db_conf()
+                    vocal_compressor_ratio_gui = vocal_compressor_ratio_conf()
+                    vocal_compressor_attack_ms_gui = vocal_compressor_attack_ms_conf()
+                    vocal_compressor_release_ms_gui = vocal_compressor_release_ms_conf()
+                    vocal_gain_db_gui = vocal_gain_db_conf()
+
+            with gr.Accordion("Background Effects Parameters", open=False): # with gr.Row():
+                # gr.Label("Background Effects Parameters")
+                with gr.Row():
+                    background_highpass_freq_gui = background_highpass_freq_conf()
+                    background_lowpass_freq_gui = background_lowpass_freq_conf()
+                    background_reverb_room_size_gui = background_reverb_room_size_conf()
+                    background_reverb_damping_gui = background_reverb_damping_conf()
+                    background_reverb_wet_level_gui = background_reverb_wet_level_conf()
+                    background_compressor_threshold_db_gui = background_compressor_threshold_db_conf()
+                    background_compressor_ratio_gui = background_compressor_ratio_conf()
+                    background_compressor_attack_ms_gui = background_compressor_attack_ms_conf()
+                    background_compressor_release_ms_gui = background_compressor_release_ms_conf()
+                    background_gain_db_gui = background_gain_db_conf()
+
+            stem_gui.change(
+                show_vocal_components,
+                [stem_gui],
+                [main_gui, dereverb_gui, vocal_effects_gui, background_effects_gui],
+            )
+
         button_base = button_conf()
         output_base = output_conf()
 
@@ -757,6 +1310,15 @@ def get_gui(theme):
                 stem_gui,
                 main_gui,
                 dereverb_gui,
+                vocal_effects_gui,
+                background_effects_gui,
+                vocal_reverb_room_size_gui, vocal_reverb_damping_gui, vocal_reverb_dryness_gui, vocal_reverb_wet_level_gui,
+                vocal_delay_seconds_gui, vocal_delay_mix_gui, vocal_compressor_threshold_db_gui, vocal_compressor_ratio_gui,
+                vocal_compressor_attack_ms_gui, vocal_compressor_release_ms_gui, vocal_gain_db_gui,
+                background_highpass_freq_gui, background_lowpass_freq_gui, background_reverb_room_size_gui,
+                background_reverb_damping_gui, background_reverb_wet_level_gui, background_compressor_threshold_db_gui,
+                background_compressor_ratio_gui, background_compressor_attack_ms_gui, background_compressor_release_ms_gui,
+                background_gain_db_gui,
             ],
             outputs=[output_base],
         )
@@ -768,6 +1330,11 @@ def get_gui(theme):
                     "vocal",
                     False,
                     False,
+                    False,
+                    False,
+                    0.15, 0.7, 0.8, 0.2,
+                    0., 0., -15, 4., 1, 100, 0,
+                    120, 11000, 0.5, 0.1, 0.25, -15, 4., 15, 60, 0,
                 ],
             ],
             fn=sound_separate,
@@ -776,6 +1343,15 @@ def get_gui(theme):
                 stem_gui,
                 main_gui,
                 dereverb_gui,
+                vocal_effects_gui,
+                background_effects_gui,
+                vocal_reverb_room_size_gui, vocal_reverb_damping_gui, vocal_reverb_dryness_gui, vocal_reverb_wet_level_gui,
+                vocal_delay_seconds_gui, vocal_delay_mix_gui, vocal_compressor_threshold_db_gui, vocal_compressor_ratio_gui,
+                vocal_compressor_attack_ms_gui, vocal_compressor_release_ms_gui, vocal_gain_db_gui,
+                background_highpass_freq_gui, background_lowpass_freq_gui, background_reverb_room_size_gui,
+                background_reverb_damping_gui, background_reverb_wet_level_gui, background_compressor_threshold_db_gui,
+                background_compressor_ratio_gui, background_compressor_attack_ms_gui, background_compressor_release_ms_gui,
+                background_gain_db_gui,
             ],
             outputs=[output_base],
             cache_examples=False,
