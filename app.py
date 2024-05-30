@@ -32,6 +32,7 @@ import traceback
 from pedalboard import Pedalboard, Reverb, Delay, Chorus, Compressor, Gain, HighpassFilter, LowpassFilter
 from pedalboard.io import AudioFile
 import numpy as np
+import yt_dlp
 
 warnings.filterwarnings("ignore")
 
@@ -931,6 +932,78 @@ def sound_separate(media_file, stem, main, dereverb, vocal_effects=True, backgro
     return outputs
 
 
+def audio_downloader(
+        url_media,
+):
+
+    url_media = url_media.strip()
+
+    if not url_media:
+        return None
+
+    dir_output_downloads = "downloads"
+    os.makedirs(dir_output_downloads, exist_ok=True)
+
+    media_info = yt_dlp.YoutubeDL(
+        {"quiet": True, "no_warnings": True, "noplaylist": True}
+    ).extract_info(url_media, download=False)
+    download_path = f"{os.path.join(dir_output_downloads, media_info['title'])}.m4a"
+
+    ydl_opts = {
+        'format': 'm4a/bestaudio/best',
+        'postprocessors': [{  # Extract audio using ffmpeg
+            'key': 'FFmpegExtractAudio',
+            'preferredcodec': 'm4a',
+        }],
+        'force_overwrites': True,
+        'noplaylist': True,
+        'no_warnings': True,
+        'quiet': True,
+        'ignore_no_formats_error': True,
+        'restrictfilenames': True,
+        'outtmpl': download_path,
+    }
+    with yt_dlp.YoutubeDL(ydl_opts) as ydl_download:
+        ydl_download.download([url_media])
+
+    return download_path
+
+
+def downloader_conf():
+    return gr.Checkbox(
+        False,
+        label="URL-to-Audio",
+        # info="",
+        container=False,
+    )
+
+
+def url_media_conf():
+    return gr.Textbox(
+        value="",
+        label="Enter URL",
+        placeholder="www.youtube.com/watch?v=g_9rPvbENUw",
+        visible=False,
+        lines=1,
+    )
+
+
+def url_button_conf():
+    return gr.Button(
+        "Go",
+        variant="secondary",
+        visible=False,
+    )
+
+
+def show_components_downloader(value_active):
+    return gr.update(
+        visible=value_active
+    ), gr.update(
+        visible=value_active
+    )
+
+
 def audio_conf():
     return gr.File(
         label="Audio file",
@@ -1251,7 +1324,26 @@ def get_gui(theme):
         gr.Markdown(title)
         gr.Markdown(description)
 
+        downloader_gui = downloader_conf()
+        with gr.Row():
+            with gr.Column(scale=2):
+                url_media_gui = url_media_conf()
+            with gr.Column(scale=1):
+                url_button_gui = url_button_conf()
+
+        downloader_gui.change(
+            show_components_downloader,
+            [downloader_gui],
+            [url_media_gui, url_button_gui]
+        )
+
         aud = audio_conf()
+
+        url_button_gui.click(
+            audio_downloader,
+            [url_media_gui],
+            [aud]
+        )
 
         with gr.Column():
             with gr.Row():
@@ -1378,4 +1470,3 @@ if __name__ == "__main__":
         quiet=False,
         debug=False,
     )
-                         
