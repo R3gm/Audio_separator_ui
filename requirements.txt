@@ -2,3 +2,4 @@ soundfile
 librosa
 torch==2.2.0
 pedalboard
+yt-dlp
