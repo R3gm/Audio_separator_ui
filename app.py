@@ -941,6 +941,8 @@ def audio_downloader(
     if not url_media:
         return None
 
+    print(url_media[10:])
+
     dir_output_downloads = "downloads"
     os.makedirs(dir_output_downloads, exist_ok=True)
 
