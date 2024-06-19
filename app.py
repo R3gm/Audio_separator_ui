@@ -857,7 +857,8 @@ def sound_separate(media_file, stem, main, dereverb, vocal_effects=True, backgro
                    background_highpass_freq=120, background_lowpass_freq=11000,
                    background_reverb_room_size=0.5, background_reverb_damping=0.5, background_reverb_wet_level=0.25,
                    background_compressor_threshold_db=-20, background_compressor_ratio=2.5, background_compressor_attack_ms=15, background_compressor_release_ms=80,
-                   background_gain_db=3):
+                   background_gain_db=3,
+):
     if not media_file:
         raise ValueError("The audio path is missing.")
 
@@ -869,6 +870,12 @@ def sound_separate(media_file, stem, main, dereverb, vocal_effects=True, backgro
 
     outputs = []
 
+    try:
+        duration_base_ = librosa.get_duration(filename=media_file)
+        print("Duration audio:", duration_base_)
+    except Exception as e:
+        print(e)
+    
     start_time = time.time()
 
     if stem == "vocal":
@@ -896,6 +903,7 @@ def sound_separate(media_file, stem, main, dereverb, vocal_effects=True, backgro
 
             outputs.append(vocal_audio)
         except Exception as error:
+            gr.Info(str(error))
             logger.error(str(error))
 
     if stem == "background":
@@ -933,7 +941,7 @@ def sound_separate(media_file, stem, main, dereverb, vocal_effects=True, backgro
 
 
 def audio_downloader(
-        url_media,
+    url_media,
 ):
 
     url_media = url_media.strip()
