@@ -31,7 +31,6 @@ import time
 import traceback
 from pedalboard import Pedalboard, Reverb, Delay, Chorus, Compressor, Gain, HighpassFilter, LowpassFilter
 from pedalboard.io import AudioFile
-import numpy as np
 import yt_dlp
 
 warnings.filterwarnings("ignore")
@@ -765,7 +764,7 @@ def add_instrumental_effects(input_file, output_file, highpass_freq=100, lowpass
                 effected = board(chunk, f.samplerate, reset=False)
                 o.write(effected)
 
-    
+
 def sound_separate(media_file, stem, main, dereverb, vocal_effects=True, background_effects=True,
                    vocal_reverb_room_size=0.6, vocal_reverb_damping=0.6, vocal_reverb_wet_level=0.35,
                    vocal_delay_seconds=0.4, vocal_delay_mix=0.25,
@@ -875,7 +874,7 @@ def sound_separate(media_file, stem, main, dereverb, vocal_effects=True, backgro
         print("Duration audio:", duration_base_)
     except Exception as e:
         print(e)
-    
+
     start_time = time.time()
 
     if stem == "vocal":

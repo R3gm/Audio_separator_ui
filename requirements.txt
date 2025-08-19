@@ -3,3 +3,16 @@ librosa
 torch==2.2.0
 pedalboard
 yt-dlp
+tqdm
+spaces
+onnxruntime
+# use numpy<2 if giving error
+numpy
+gradio
+ffmpeg-python
+scipy
+scikit-learn
+matplotlib
+seaborn
+requests
+urllib3
