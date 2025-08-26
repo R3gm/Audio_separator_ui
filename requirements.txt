@@ -1,5 +1,19 @@
 soundfile
 librosa
-torch==2.2.0
+torch==2.5.1
 pedalboard
 yt-dlp
+tqdm
+spaces
+numpy<2
+gradio==5.43.1
+ffmpeg-python
+scipy
+scikit-learn
+matplotlib
+matplotlib-inline
+seaborn
+requests
+urllib3
+onnxruntime-gpu==1.22.0
+# onnxruntime  # only CPU

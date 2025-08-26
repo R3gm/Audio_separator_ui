@@ -1,0 +1,5 @@
+venv
+.venv
+__pycache__
+get-pip.py
+clean_song_output

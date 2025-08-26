@@ -1,6 +1,5 @@
 import os
-# os.system("pip install ./ort_nightly_gpu-1.17.0.dev20240118002-cp310-cp310-manylinux_2_28_x86_64.whl")
-os.system("pip install ort-nightly-gpu --index-url=https://aiinfra.pkgs.visualstudio.com/PublicPackages/_packaging/ort-cuda-12-nightly/pypi/simple/")
+import spaces
 import gc
 import hashlib
 import queue
@@ -20,21 +19,27 @@ from utils import (
     download_manager,
 )
 import random
-import spaces
 from utils import logger
 import onnxruntime as ort
 import warnings
-import spaces
 import gradio as gr
-import logging
 import time
 import traceback
 from pedalboard import Pedalboard, Reverb, Delay, Chorus, Compressor, Gain, HighpassFilter, LowpassFilter
 from pedalboard.io import AudioFile
-import numpy as np
 import yt_dlp
+import argparse
+
+parser = argparse.ArgumentParser(description="Run the app with optional sharing")
+parser.add_argument(
+    '--share',
+    action='store_true',
+    help='Enable sharing mode'
+)
+args = parser.parse_args()
 
 warnings.filterwarnings("ignore")
+IS_COLAB = True if ('google.colab' in sys.modules or args.share) else False
 
 title = "<center><strong><font size='7'>Audio🔹separator</font></strong></center>"
 description = "This demo uses the MDX-Net models for vocal and background sound separation."
@@ -350,7 +355,7 @@ class MDX:
         return self.segment(processed_batches, True, chunk)
 
 
-@spaces.GPU()
+@spaces.GPU(duration=30)
 def run_mdx(
     model_params,
     output_dir,
@@ -372,6 +377,9 @@ def run_mdx(
         device_properties = torch.cuda.get_device_properties(device)
         vram_gb = device_properties.total_memory / 1024**3
         m_threads = 1 if vram_gb < 8 else (8 if vram_gb > 32 else 2)
+        duration = librosa.get_duration(filename=filename)
+        if duration < 60:
+            m_threads = 1
         logger.info(f"threads: {m_threads} vram: {vram_gb}")
     else:
         device = torch.device("cpu")
@@ -459,7 +467,9 @@ def run_mdx_beta(
 
     m_threads = 1
     duration = librosa.get_duration(filename=filename)
-    if duration >= 60 and duration <= 120:
+    if IS_COLAB or duration < 60:
+        m_threads = 1
+    elif duration >= 60 and duration <= 120:
         m_threads = 8
     elif duration > 120:
         m_threads = 16
@@ -580,9 +590,13 @@ def get_hash(filepath):
 
     return file_hash.hexdigest()[:18]
 
+
 def random_sleep():
-    sleep_time = round(random.uniform(5.2, 7.9), 1)
+    sleep_time = 0.1
+    if os.getenv("SPACES_ZERO_GPU"):
+        sleep_time = round(random.uniform(3.2, 5.9), 1)
     time.sleep(sleep_time)
+
 
 def process_uvr_task(
     orig_song_path: str = "aud_test.mp3",
@@ -653,16 +667,16 @@ def process_uvr_task(
                 device_base=device_base,
             )
         except Exception as e:
-                backup_vocals_path, main_vocals_path = run_mdx_beta(
-                    mdx_model_params,
-                    song_output_dir,
-                    os.path.join(mdxnet_models_dir, "UVR_MDXNET_KARA_2.onnx"),
-                    vocals_path,
-                    suffix="Backup",
-                    invert_suffix="Main",
-                    denoise=True,
-                    device_base=device_base,
-                )
+            backup_vocals_path, main_vocals_path = run_mdx_beta(
+                mdx_model_params,
+                song_output_dir,
+                os.path.join(mdxnet_models_dir, "UVR_MDXNET_KARA_2.onnx"),
+                vocals_path,
+                suffix="Backup",
+                invert_suffix="Main",
+                denoise=True,
+                device_base=device_base,
+            )
     else:
         backup_vocals_path, main_vocals_path = None, vocals_path
 
@@ -683,16 +697,16 @@ def process_uvr_task(
                 device_base=device_base,
             )
         except Exception as e:
-                _, vocals_dereverb_path = run_mdx_beta(
-                    mdx_model_params,
-                    song_output_dir,
-                    os.path.join(mdxnet_models_dir, "Reverb_HQ_By_FoxJoy.onnx"),
-                    main_vocals_path,
-                    invert_suffix="DeReverb",
-                    exclude_main=True,
-                    denoise=True,
-                    device_base=device_base,
-                )
+            _, vocals_dereverb_path = run_mdx_beta(
+                mdx_model_params,
+                song_output_dir,
+                os.path.join(mdxnet_models_dir, "Reverb_HQ_By_FoxJoy.onnx"),
+                main_vocals_path,
+                invert_suffix="DeReverb",
+                exclude_main=True,
+                denoise=True,
+                device_base=device_base,
+            )
     else:
         vocals_dereverb_path = main_vocals_path
 
@@ -765,99 +779,77 @@ def add_instrumental_effects(input_file, output_file, highpass_freq=100, lowpass
                 effected = board(chunk, f.samplerate, reset=False)
                 o.write(effected)
 
-    
-def sound_separate(media_file, stem, main, dereverb, vocal_effects=True, background_effects=True,
-                   vocal_reverb_room_size=0.6, vocal_reverb_damping=0.6, vocal_reverb_wet_level=0.35,
-                   vocal_delay_seconds=0.4, vocal_delay_mix=0.25,
-                   vocal_compressor_threshold_db=-25, vocal_compressor_ratio=3.5, vocal_compressor_attack_ms=10, vocal_compressor_release_ms=60,
-                   vocal_gain_db=4,
-                   background_highpass_freq=120, background_lowpass_freq=11000,
-                   background_reverb_room_size=0.5, background_reverb_damping=0.5, background_reverb_wet_level=0.25,
-                   background_compressor_threshold_db=-20, background_compressor_ratio=2.5, background_compressor_attack_ms=15, background_compressor_release_ms=80,
-                   background_gain_db=3):
-    if not media_file:
-        raise ValueError("The audio path is missing.")
 
-    if not stem:
-        raise ValueError("Please select 'vocal' or 'background' stem.")
-
-    hash_audio = str(get_hash(media_file))
-    media_dir = os.path.dirname(media_file)
-
-    outputs = []
-
-    start_time = time.time()
-
-    if stem == "vocal":
-        try:
-            _, _, _, _, vocal_audio = process_uvr_task(
-                orig_song_path=media_file,
-                song_id=hash_audio + "mdx",
-                main_vocals=main,
-                dereverb=dereverb,
-                remove_files_output_dir=False,
-            )
-
-            if vocal_effects:
-                suffix = '_effects'
-                file_name, file_extension = os.path.splitext(vocal_audio)
-                out_effects = file_name + suffix + file_extension
-                out_effects_path = os.path.join(media_dir, out_effects)
-                add_vocal_effects(vocal_audio, out_effects_path,
-                                  reverb_room_size=vocal_reverb_room_size, reverb_damping=vocal_reverb_damping, reverb_wet_level=vocal_reverb_wet_level,
-                                  delay_seconds=vocal_delay_seconds, delay_mix=vocal_delay_mix,
-                                  compressor_threshold_db=vocal_compressor_threshold_db, compressor_ratio=vocal_compressor_ratio, compressor_attack_ms=vocal_compressor_attack_ms, compressor_release_ms=vocal_compressor_release_ms,
-                                  gain_db=vocal_gain_db
-                                  )
-                vocal_audio = out_effects_path
-
-            outputs.append(vocal_audio)
-        except Exception as error:
-            logger.error(str(error))
-            traceback.print_exc()
-
-    if stem == "background":
-        background_audio, _ = process_uvr_task(
-            orig_song_path=media_file,
-            song_id=hash_audio + "voiceless",
-            only_voiceless=True,
-            remove_files_output_dir=False,
-        )
-
-        if background_effects:
-            suffix = '_effects'
-            file_name, file_extension = os.path.splitext(background_audio)
-            out_effects = file_name + suffix + file_extension
-            out_effects_path = os.path.join(media_dir, out_effects)
-            add_instrumental_effects(background_audio, out_effects_path,
-                                     highpass_freq=background_highpass_freq, lowpass_freq=background_lowpass_freq,
-                                     reverb_room_size=background_reverb_room_size, reverb_damping=background_reverb_damping, reverb_wet_level=background_reverb_wet_level,
-                                     compressor_threshold_db=background_compressor_threshold_db, compressor_ratio=background_compressor_ratio, compressor_attack_ms=background_compressor_attack_ms, compressor_release_ms=background_compressor_release_ms,
-                                     gain_db=background_gain_db
-                                     )
-            background_audio = out_effects_path
-
-        outputs.append(background_audio)
-
-    end_time = time.time()
-    execution_time = end_time - start_time
-    logger.info(f"Execution time: {execution_time} seconds")
-
-    if not outputs:
-        raise Exception("Error in sound separation.")
-
-    return outputs
+COMMON_SAMPLE_RATES = [8000, 16000, 22050, 32000, 44100, 48000, 96000]
 
 
-def sound_separate(media_file, stem, main, dereverb, vocal_effects=True, background_effects=True,
-                   vocal_reverb_room_size=0.6, vocal_reverb_damping=0.6, vocal_reverb_dryness=0.8 ,vocal_reverb_wet_level=0.35,
-                   vocal_delay_seconds=0.4, vocal_delay_mix=0.25,
-                   vocal_compressor_threshold_db=-25, vocal_compressor_ratio=3.5, vocal_compressor_attack_ms=10, vocal_compressor_release_ms=60,
-                   vocal_gain_db=4,
-                   background_highpass_freq=120, background_lowpass_freq=11000,
-                   background_reverb_room_size=0.5, background_reverb_damping=0.5, background_reverb_wet_level=0.25,
-                   background_compressor_threshold_db=-20, background_compressor_ratio=2.5, background_compressor_attack_ms=15, background_compressor_release_ms=80,
-                   background_gain_db=3,
+def save_audio(audio_opt: np.ndarray, final_sr: int, output_audio_path: str, target_format: str) -> str:
+    """
+    Save audio with automatic handling of unsupported sample rates for non-WAV formats.
+    """
+    ext = os.path.splitext(output_audio_path)[1].lower()
+
+    try:
+        if ext == ".wav":
+            sf.write(output_audio_path, audio_opt, final_sr, format=target_format)
+        else:
+            target_sr = min(COMMON_SAMPLE_RATES, key=lambda altsr: abs(altsr - final_sr))
+            if target_sr != final_sr:
+                logger.warning(f"Resampling from {final_sr} -> {target_sr} for {ext}")
+                audio_opt = librosa.resample(audio_opt, orig_sr=final_sr, target_sr=target_sr)
+            sf.write(output_audio_path, audio_opt, target_sr, format=target_format)
+    except Exception as e:
+        logger.error(e)
+        logger.error(f"Error saving {output_audio_path}, performing fallback to WAV")
+        output_audio_path = output_audio_path.replace(f"_converted.{target_format}", ".wav")
+
+    return output_audio_path
+
+
+def convert_format(file_paths, media_dir, target_format):
+    """
+    Convert a list of audio files to the target format with automatic safe sample rates.
+
+    WAV files are returned as-is; non-WAV files are resampled if needed to a supported rate.
+    """
+    target_format = target_format.lower()
+    if target_format == "wav":
+        return file_paths  # No conversion needed for WAV
+
+    suffix = "_converted"
+    converted_files = []
+
+    for fp in file_paths:
+        # Absolute paths and base filename
+        abs_fp = os.path.abspath(fp)
+        file_name, _ = os.path.splitext(os.path.basename(abs_fp))
+        file_ext = f".{target_format}"
+        out_name = file_name + suffix + file_ext
+        out_path = os.path.join(media_dir, out_name)
+
+        # Load audio with librosa (handles many formats)
+        audio, sr = sf.read(abs_fp)
+
+        # Save using safe resampling
+        saved_path = save_audio(audio, sr, out_path, target_format)
+        converted_files.append(saved_path)
+
+        # print(f"Converted: {abs_fp} -> {saved_path}")
+
+    return converted_files
+
+
+def sound_separate(
+    media_file, stem, main, dereverb, vocal_effects=True, background_effects=True,
+    vocal_reverb_room_size=0.6, vocal_reverb_damping=0.6, vocal_reverb_dryness=0.8, vocal_reverb_wet_level=0.35,
+    vocal_delay_seconds=0.4, vocal_delay_mix=0.25,
+    vocal_compressor_threshold_db=-25, vocal_compressor_ratio=3.5, vocal_compressor_attack_ms=10, vocal_compressor_release_ms=60,
+    vocal_gain_db=4,
+    background_highpass_freq=120, background_lowpass_freq=11000,
+    background_reverb_room_size=0.5, background_reverb_damping=0.5, background_reverb_wet_level=0.25,
+    background_compressor_threshold_db=-20, background_compressor_ratio=2.5, background_compressor_attack_ms=15, background_compressor_release_ms=80,
+    background_gain_db=3,
+    target_format="WAV",
 ):
     if not media_file:
         raise ValueError("The audio path is missing.")
@@ -875,7 +867,7 @@ def sound_separate(media_file, stem, main, dereverb, vocal_effects=True, backgro
         print("Duration audio:", duration_base_)
     except Exception as e:
         print(e)
-    
+
     start_time = time.time()
 
     if stem == "vocal":
@@ -937,7 +929,7 @@ def sound_separate(media_file, stem, main, dereverb, vocal_effects=True, backgro
     if not outputs:
         raise Exception("Error in sound separation.")
 
-    return outputs
+    return convert_format(outputs, media_dir, target_format)
 
 
 def audio_downloader(
@@ -947,6 +939,10 @@ def audio_downloader(
     url_media = url_media.strip()
 
     if not url_media:
+        return None
+
+    if os.getenv("SPACES_ZERO_GPU") and "youtube.com" in url_media:
+        gr.Info("This option isn’t available on Hugging Face.")
         return None
 
     print(url_media[:10])
@@ -1329,8 +1325,19 @@ def show_vocal_components(value_name):
         )
 
 
+FORMAT_OPTIONS = ["WAV", "MP3", "OGG", "FLAC"]
+
+
+def format_conf():
+    return gr.Dropdown(
+        choices=FORMAT_OPTIONS,
+        value=FORMAT_OPTIONS[0],
+        label="Format output:"
+    )
+
+
 def get_gui(theme):
-    with gr.Blocks(theme=theme) as app:
+    with gr.Blocks(theme=theme, delete_cache=(3200, 10800)) as app:
         gr.Markdown(title)
         gr.Markdown(description)
 
@@ -1366,9 +1373,7 @@ def get_gui(theme):
                 vocal_effects_gui = vocal_effects_conf()
                 background_effects_gui = background_effects_conf()
 
-            # with gr.Column():
-            with gr.Accordion("Vocal Effects Parameters", open=False): # with gr.Row():
-                # gr.Label("Vocal Effects Parameters")
+            with gr.Accordion("Vocal Effects Parameters", open=False):
                 with gr.Row():
                     vocal_reverb_room_size_gui = vocal_reverb_room_size_conf()
                     vocal_reverb_damping_gui = vocal_reverb_damping_conf()
@@ -1382,8 +1387,7 @@ def get_gui(theme):
                     vocal_compressor_release_ms_gui = vocal_compressor_release_ms_conf()
                     vocal_gain_db_gui = vocal_gain_db_conf()
 
-            with gr.Accordion("Background Effects Parameters", open=False): # with gr.Row():
-                # gr.Label("Background Effects Parameters")
+            with gr.Accordion("Background Effects Parameters", open=False):
                 with gr.Row():
                     background_highpass_freq_gui = background_highpass_freq_conf()
                     background_lowpass_freq_gui = background_lowpass_freq_conf()
@@ -1402,6 +1406,7 @@ def get_gui(theme):
                 [main_gui, dereverb_gui, vocal_effects_gui, background_effects_gui],
             )
 
+        target_format_gui = format_conf()
         button_base = button_conf()
         output_base = output_conf()
 
@@ -1420,7 +1425,7 @@ def get_gui(theme):
                 background_highpass_freq_gui, background_lowpass_freq_gui, background_reverb_room_size_gui,
                 background_reverb_damping_gui, background_reverb_wet_level_gui, background_compressor_threshold_db_gui,
                 background_compressor_ratio_gui, background_compressor_attack_ms_gui, background_compressor_release_ms_gui,
-                background_gain_db_gui,
+                background_gain_db_gui, target_format_gui,
             ],
             outputs=[output_base],
         )
@@ -1463,19 +1468,16 @@ def get_gui(theme):
 
 
 if __name__ == "__main__":
-
     for id_model in UVR_MODELS:
         download_manager(
             os.path.join(MDX_DOWNLOAD_LINK, id_model), mdxnet_models_dir
         )
 
     app = get_gui(theme)
-
     app.queue(default_concurrency_limit=40)
-
     app.launch(
         max_threads=40,
-        share=False,
+        share=IS_COLAB,
         show_error=True,
         quiet=False,
         debug=False,
