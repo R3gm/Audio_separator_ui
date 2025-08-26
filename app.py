@@ -870,7 +870,7 @@ def sound_separate(
 
     start_time = time.time()
 
-    if stem == "vocal":
+    if "vocal" in stem:
         try:
             _, _, _, _, vocal_audio = process_uvr_task(
                 orig_song_path=media_file,
@@ -898,7 +898,7 @@ def sound_separate(
             gr.Info(str(error))
             logger.error(str(error))
 
-    if stem == "background":
+    if "background" in stem:
         background_audio, _ = process_uvr_task(
             orig_song_path=media_file,
             song_id=hash_audio + "voiceless",
@@ -1020,7 +1020,7 @@ def audio_conf():
 
 
 def stem_conf():
-    return gr.Radio(
+    return gr.CheckboxGroup(
         choices=["vocal", "background"],
         value="vocal",
         label="Stem",
@@ -1310,19 +1310,14 @@ def output_conf():
 
 
 def show_vocal_components(value_name):
+    v_ = "vocal" in value_name
+    b_ = "background" in value_name
 
-    if value_name == "vocal":
-        return gr.update(visible=True), gr.update(
-            visible=True
-        ), gr.update(visible=True), gr.update(
-            visible=False
-        )
-    else:
-        return gr.update(visible=False), gr.update(
-            visible=False
-        ), gr.update(visible=False), gr.update(
-            visible=True
-        )
+    return gr.update(visible=v_), gr.update(
+        visible=v_
+    ), gr.update(visible=v_), gr.update(
+        visible=b_
+    )
 
 
 FORMAT_OPTIONS = ["WAV", "MP3", "OGG", "FLAC"]
