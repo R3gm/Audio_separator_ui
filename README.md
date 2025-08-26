@@ -16,7 +16,11 @@ short_description: Vocal and background audio separator
 ## Overview
 **Audio Separator** is a Hugging Face Space designed to split an audio file into two distinct components: **vocals** and **background music**
 
-👉 [Visit the Space](https://huggingface.co/spaces/r3gm/Audio_separator)
+| Description | Link |
+| ----------- | ---- |
+| 📙 Colab Notebook | [![Open In Colab](https://colab.research.google.com/assets/colab-badge.svg)](https://colab.research.google.com/github/R3gm/Audio_separator_ui/blob/main/Audio_Separator_Colab.ipynb) |
+| 🎉 Repository | [![GitHub Repository](https://img.shields.io/badge/GitHub-Repository-black?style=flat-square&logo=github)](https://github.com/R3gm/Audio_separator_ui) |
+| 🚀 Online DEMO | [![Hugging Face Spaces](https://img.shields.io/badge/%F0%9F%A4%97%20Hugging%20Face-Spaces-blue)](https://huggingface.co/spaces/r3gm/Audio_separator) |
 
 ## Key Functions
 1. **Audio Upload**  
