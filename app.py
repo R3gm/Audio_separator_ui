@@ -363,7 +363,7 @@ class MDX:
         return self.segment(processed_batches, True, chunk)
 
 
-@spaces.GPU(duration=30)
+@spaces.GPU(duration=40)
 def run_mdx(
     model_params,
     output_dir,
@@ -1341,7 +1341,7 @@ def format_conf():
 
 
 def get_gui(theme):
-    with gr.Blocks(theme=theme, delete_cache=(3200, 10800)) as app:
+    with gr.Blocks(theme=theme, fill_width=True, fill_height=False, delete_cache=(3200, 10800)) as app:
         gr.Markdown(title)
         gr.Markdown(description)
 
@@ -1487,4 +1487,5 @@ if __name__ == "__main__":
         show_error=True,
         quiet=False,
         debug=IS_COLAB,
+        ssr_mode=False,
     )
