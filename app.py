@@ -27,7 +27,6 @@ import time
 import traceback
 from pedalboard import Pedalboard, Reverb, Delay, Chorus, Compressor, Gain, HighpassFilter, LowpassFilter
 from pedalboard.io import AudioFile
-import yt_dlp
 import argparse
 
 parser = argparse.ArgumentParser(description="Run the app with optional sharing")
@@ -36,14 +35,23 @@ parser.add_argument(
     action='store_true',
     help='Enable sharing mode'
 )
+parser.add_argument(
+    '--theme',
+    type=str,
+    default="NoCrypt/miku",
+    help='Set the theme (default: NoCrypt/miku)'
+)
 args = parser.parse_args()
 
 warnings.filterwarnings("ignore")
 IS_COLAB = True if ('google.colab' in sys.modules or args.share) else False
+IS_ZERO_GPU = os.getenv("SPACES_ZERO_GPU")
 
 title = "<center><strong><font size='7'>Audio🔹separator</font></strong></center>"
-description = "This demo uses the MDX-Net models for vocal and background sound separation."
-theme = "NoCrypt/miku"
+base_demo = "This demo uses the "
+description = (f"{base_demo if IS_ZERO_GPU else ''}MDX-Net models for vocal and background sound separation.")
+RESOURCES = "- You can also try `Audio🔹separator` in Colab’s free tier, which provides free GPU [link](https://github.com/R3gm/Audio_separator_ui?tab=readme-ov-file#audio-separator)."
+theme = args.theme
 
 stem_naming = {
     "Vocals": "Instrumental",
@@ -593,7 +601,7 @@ def get_hash(filepath):
 
 def random_sleep():
     sleep_time = 0.1
-    if os.getenv("SPACES_ZERO_GPU"):
+    if IS_ZERO_GPU:
         sleep_time = round(random.uniform(3.2, 5.9), 1)
     time.sleep(sleep_time)
 
@@ -733,12 +741,12 @@ def add_vocal_effects(input_file, output_file, reverb_room_size=0.6, vocal_rever
 
     if delay_seconds > 0 or delay_mix > 0:
         effects.append(Delay(delay_seconds=delay_seconds, mix=delay_mix))
-        print("delay applied")
+        # print("delay applied")
     # effects.append(Chorus())
 
     if gain_db:
         effects.append(Gain(gain_db=gain_db))
-        print("added gain db")
+        # print("added gain db")
 
     board = Pedalboard(effects)
 
@@ -911,7 +919,7 @@ def sound_separate(
             file_name, file_extension = os.path.splitext(os.path.abspath(background_audio))
             out_effects = file_name + suffix + file_extension
             out_effects_path = os.path.join(media_dir, out_effects)
-            print(file_name, file_extension, out_effects, out_effects_path)
+            # print(file_name, file_extension, out_effects, out_effects_path)
             add_instrumental_effects(background_audio, out_effects_path,
                                      highpass_freq=background_highpass_freq, lowpass_freq=background_lowpass_freq,
                                      reverb_room_size=background_reverb_room_size, reverb_damping=background_reverb_damping, reverb_wet_level=background_reverb_wet_level,
@@ -941,11 +949,12 @@ def audio_downloader(
     if not url_media:
         return None
 
-    if os.getenv("SPACES_ZERO_GPU") and "youtube.com" in url_media:
+    if IS_ZERO_GPU and "youtube.com" in url_media:
         gr.Info("This option isn’t available on Hugging Face.")
         return None
 
-    print(url_media[:10])
+    import yt_dlp
+    # print(url_media[:10])
 
     dir_output_downloads = "downloads"
     os.makedirs(dir_output_downloads, exist_ok=True)
@@ -1320,7 +1329,7 @@ def show_vocal_components(value_name):
     )
 
 
-FORMAT_OPTIONS = ["WAV", "MP3", "OGG", "FLAC"]
+FORMAT_OPTIONS = ["WAV", "MP3", "FLAC"]
 
 
 def format_conf():
@@ -1459,6 +1468,8 @@ def get_gui(theme):
             cache_examples=False,
         )
 
+        gr.Markdown(RESOURCES)
+
     return app
 
 
@@ -1475,5 +1486,5 @@ if __name__ == "__main__":
         share=IS_COLAB,
         show_error=True,
         quiet=False,
-        debug=False,
+        debug=IS_COLAB,
     )

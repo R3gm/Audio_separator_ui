@@ -11,7 +11,7 @@ license: mit
 short_description: Vocal and background audio separator
 ---
 
-# Audio Separator (by r3gm)
+# Audio Separator
 
 ## Overview
 **Audio Separator** is a Hugging Face Space designed to split an audio file into two distinct components: **vocals** and **background music**
